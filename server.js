@@ -8,6 +8,7 @@ const swaggerUi = require('swagger-ui-express');
 
 const env = require('./src/config/env');
 const connectDB = require('./src/config/db');
+const { corsOptions } = require('./src/config/cors');
 const models = require('./src/models'); // register all schemas before anything else touches Mongoose
 const routes = require('./src/routes');
 const swaggerSpec = require('./src/config/swagger');
@@ -23,7 +24,7 @@ app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 // Global Security & Input Validation Middlewares
 app.use(helmet());
-app.use(cors());
+app.use(cors(corsOptions));
 app.use(express.json({ limit: '15mb' }));
 app.use(express.urlencoded({ extended: true, limit: '15mb' }));
 
