@@ -3,7 +3,7 @@ name:  Deploy
 on:
   push:
     branches:
-      - dev8888
+      - dev
       - staging
 
 jobs:
@@ -27,11 +27,7 @@ jobs:
           script: |
 
             set -e
-            cd /home/dev/add-venture-frontend
-            git pull
-            npm install
-            npm run build
-            echo "Deployment completed successfully!"
+       
 
 
   # =========================
