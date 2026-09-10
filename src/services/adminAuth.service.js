@@ -9,11 +9,11 @@ function fail(message, code = 400) {
 }
 
 async function login(email, password) {
-  const admin = await Admin.findOne({ email }).select('+password');
-  // if (!admin) throw fail('Invalid password.1');
+  const admin = await Admin.findOne({ email }).select('password');
+  if (!admin) throw fail('Invalid password.1');
 
-  // if (!admin.is_active) throw fail('Your account has been deactivated. Please contact support.', 403);
-  // if (!(await bcrypt.compare(password, admin.password))) throw fail('Invalid password.2');
+  if (!admin.is_active) throw fail('Your account has been deactivated. Please contact support.', 403);
+  if (!(await bcrypt.compare(password, admin.password))) throw fail('Invalid password.2');
 
   const accessToken = await issueToken(admin._id, 'admin');
   return { admin, accessToken };
