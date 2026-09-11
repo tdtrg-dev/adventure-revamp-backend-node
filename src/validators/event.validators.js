@@ -73,6 +73,11 @@ const getEventsByLocation = Joi.object({
   user_id: objectId().required(),
   currentLat: Joi.number().min(-90).max(90).required(),
   currentLang: Joi.number().min(-180).max(180).required(),
+  // All three optional: radius falls back to the saved profile radius, and
+  // omitting both dates keeps the original "upcoming events only" behaviour.
+  radius: Joi.number().min(1).max(20000),
+  start_date: Joi.date(),
+  end_date: Joi.date().min(Joi.ref('start_date')).messages({ 'date.min': 'end_date must be on or after start_date' }),
   page: Joi.number().integer().min(1),
 });
 
@@ -82,12 +87,16 @@ const getEventsByRoute = Joi.object({
   start_lng: Joi.number().min(-180).max(180).required(),
   end_lat: Joi.number().min(-90).max(90).required(),
   end_lng: Joi.number().min(-180).max(180).required(),
-  waypoints: Joi.array().items(
-    Joi.object({
-      lat: Joi.number().min(-90).max(90).required(),
-      lng: Joi.number().min(-180).max(180).required(),
-    })
-  ),
+  waypoints: Joi.array()
+    .max(50) // bounds the per-event segment scan in getEventsByRoute
+    .items(
+      Joi.object({
+        lat: Joi.number().min(-90).max(90).required(),
+        lng: Joi.number().min(-180).max(180).required(),
+      })
+    ),
+  // optional — falls back to the saved profile radius
+  radius: Joi.number().min(1).max(20000),
   page: Joi.number().integer().min(1),
 });
 

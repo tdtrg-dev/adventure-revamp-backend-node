@@ -536,47 +536,203 @@ async function getAttendedEvents(userId, page = 1) {
 
 // ── Geo search ───────────────────────────────────────────────────────────────
 
-async function getEventsByLocation(userId, lat, lng, page = 1) {
-  const radius = await getUserRadius(userId);
-  const today = new Date(new Date().toISOString().slice(0, 10)); // midnight UTC boundary, as a real Date (not a string) — aggregate() pipelines skip Mongoose's auto-casting
-  const perPage = 15;
+const GEO_PER_PAGE = 15;
+const EXTERNAL_POOL_SIZE = 50;
+const EXTERNAL_ROUTE_POINT_CAP = 10; // max Ticketmaster requests per route search — bounds the fan-out however long the trip is
 
-  const pipeline = [
-    {
-      $geoNear: {
-        near: { type: 'Point', coordinates: [lng, lat] },
-        distanceField: '_distanceKm',
-        distanceMultiplier: 0.001,
-        maxDistance: radius * 1000,
-        spherical: true,
-        query: { status: { $nin: ['pending', 'cancel', 'draft'] }, end_date: { $gte: today } },
-      },
-    },
-    { $sort: { _distanceKm: 1, start_date: 1 } },
-  ];
-
-  const all = await Event.aggregate(pipeline);
-  all.forEach((e) => (e.id = String(e._id))); // aggregate() returns plain objects — no automatic `id` virtual
-  const total = all.length;
-  const pageItems = all.slice((page - 1) * perPage, page * perPage);
-  const events = await Event.populate(pageItems, [{ path: 'interests', select: 'title' }]);
-
-  if (total === 0) {
-    return { data: [], pagination: {}, _message: 'No events found in your area.' };
-  }
-
-  const [reviewStats, visitStats] = await Promise.all([reviewStatsFor(events.map((e) => e._id)), visitStatsFor(events.map((e) => e._id))]);
-  const favouriteEventIds = new Set((await Event.find({ favourited_by: userId }).select('_id')).map((e) => String(e._id)));
-
-  const data = events.map((e) => formatSingleEvent(e, { reviewStats, visitStats, favouriteEventIds, distanceKm: e._distanceKm }));
-
-  return { data, pagination: { current_page: page, per_page: perPage, total, last_page: Math.max(1, Math.ceil(total / perPage)) }, _message: 'Events fetched successfully.' };
+/**
+ * Date window shared by both geo searches. With neither bound supplied this
+ * collapses to the original "has not ended yet" rule, so existing callers see no
+ * change; supplying either bound switches to a standard overlap test — an event
+ * qualifies when it is running at any point inside the requested window.
+ */
+function eventDateFilter(startDate, endDate, today) {
+  const filter = { end_date: { $gte: startDate || today } };
+  if (endDate) filter.start_date = { $lte: endDate };
+  return filter;
 }
 
-async function getEventsByRoute(userId, startLat, startLng, endLat, endLng, waypoints = [], page = 1) {
-  const radius = await getUserRadius(userId);
+/**
+ * Cached Ticketmaster pool around one coordinate. ticketmaster.search() already
+ * swallows its own failures, so an outage degrades these endpoints to DB-only
+ * results rather than erroring. Unlike the home feed there is deliberately no
+ * far-away fallback pool: a radius search that quietly answered with events
+ * hundreds of km outside the requested radius would be worse than an empty one.
+ */
+async function externalEventsNear(lat, lng, radius, filters = {}) {
+  if (!env.ticketmaster.enabled) return [];
+
+  const tmRadius = Math.ceil(radius); // the Discovery API takes an integer radius
+  const bucket = `${Math.round(lat * 100) / 100},${Math.round(lng * 100) / 100}`;
+  const key = `geo_ext:tm:${bucket}:${tmRadius}:${JSON.stringify(filters)}`;
+  return ttlCache.remember(key, 30 * 60 * 1000, () => ticketmaster.search(lat, lng, tmRadius, EXTERNAL_POOL_SIZE, filters));
+}
+
+/** Linear interpolation along a polyline at a given arc-length offset, in km. */
+function pointAtDistance(points, segLengths, target) {
+  let travelled = 0;
+  for (let i = 0; i < segLengths.length; i++) {
+    if (travelled + segLengths[i] >= target || i === segLengths.length - 1) {
+      const t = segLengths[i] === 0 ? 0 : Math.min(1, (target - travelled) / segLengths[i]);
+      return { lat: points[i].lat + t * (points[i + 1].lat - points[i].lat), lng: points[i].lng + t * (points[i + 1].lng - points[i].lng) };
+    }
+    travelled += segLengths[i];
+  }
+  return points[points.length - 1];
+}
+
+/**
+ * Query centres spaced evenly along the route by arc length, capped at
+ * EXTERNAL_ROUTE_POINT_CAP so a long trip cannot fan out into dozens of requests.
+ * Querying only the supplied vertices would leave the stretches between them
+ * unsearched, so we walk the line instead — and when the cap forces the centres
+ * further apart than the radius, each query circle is widened to
+ * sqrt((spacing/2)^2 + radius^2), the exact distance needed to still cover every
+ * point within `radius` of the line. Over-fetch is harmless: the caller measures
+ * true distance-to-route afterwards and discards the rest.
+ */
+function routeQueryCentres(routePoints, radius, cap) {
+  const segLengths = [];
+  let length = 0;
+  for (let i = 0; i < routePoints.length - 1; i++) {
+    const d = haversineDistanceKm(routePoints[i].lat, routePoints[i].lng, routePoints[i + 1].lat, routePoints[i + 1].lng);
+    segLengths.push(d);
+    length += d;
+  }
+  if (length === 0) return { centres: [routePoints[0]], queryRadius: radius };
+
+  const count = Math.min(cap, Math.max(2, Math.ceil(length / (radius * 1.8)) + 1));
+  const spacing = length / (count - 1);
+  const centres = Array.from({ length: count }, (_, i) => pointAtDistance(routePoints, segLengths, i * spacing));
+  return { centres, queryRadius: Math.sqrt((spacing / 2) ** 2 + radius ** 2) };
+}
+
+/** Ticketmaster has no polyline search, so fan out along the route and dedupe by external id. */
+async function externalEventsAlongRoute(routePoints, radius) {
+  if (!env.ticketmaster.enabled) return [];
+
+  const { centres, queryRadius } = routeQueryCentres(routePoints, radius, EXTERNAL_ROUTE_POINT_CAP);
+  const pools = await Promise.all(centres.map((p) => externalEventsNear(p.lat, p.lng, queryRadius)));
+
+  const seen = new Set();
+  const merged = [];
+  for (const pool of pools) {
+    for (const ext of pool) {
+      if (seen.has(ext.external_id)) continue;
+      seen.add(ext.external_id);
+      merged.push(ext);
+    }
+  }
+  return merged;
+}
+
+/**
+ * Ticketmaster filters on an event start datetime while our own rule is an
+ * overlap test, so re-apply the window locally to keep both sources answering
+ * the same question. Undated external rows are kept — the API already bounded
+ * them and there is nothing here to test.
+ */
+function externalInDateWindow(ext, startDate, endDate, today) {
+  const extStart = ext.start_date || ext.end_date;
+  const extEnd = ext.end_date || ext.start_date;
+  if (!extStart) return true;
+  if (new Date(extEnd) < (startDate || today)) return false;
+  if (endDate && new Date(extStart) > endDate) return false;
+  return true;
+}
+
+function startDateValue(d) {
+  const t = d ? new Date(d).getTime() : NaN;
+  return Number.isNaN(t) ? Infinity : t; // undated external events sort last within their distance band
+}
+
+/** Orders merged own + external entries nearest-first, ties broken by soonest start. */
+function byDistanceThenStart(a, b) {
+  return a.distance - b.distance || startDateValue(a.startDate) - startDateValue(b.startDate);
+}
+
+/** Review/visit/favourite aggregates for just the DB rows that made the current page. */
+async function geoPageAggregates(userId, docs) {
+  const ids = docs.map((d) => d._id);
+  const [reviewStats, visitStats, favouriteRows] = await Promise.all([
+    reviewStatsFor(ids),
+    visitStatsFor(ids),
+    Event.find({ favourited_by: userId }).select('_id'),
+  ]);
+  return { reviewStats, visitStats, favouriteEventIds: new Set(favouriteRows.map((r) => String(r._id))) };
+}
+
+async function getEventsByLocation(userId, lat, lng, page = 1, options = {}) {
+  const { startDate = null, endDate = null } = options;
+  const radius = options.radius > 0 ? options.radius : await getUserRadius(userId);
   const today = new Date(new Date().toISOString().slice(0, 10)); // midnight UTC boundary, as a real Date (not a string) — aggregate() pipelines skip Mongoose's auto-casting
-  const perPage = 15;
+  const perPage = GEO_PER_PAGE;
+
+  const tmFilters = {};
+  if (startDate) tmFilters.start_date = startDate;
+  if (endDate) tmFilters.end_date = endDate;
+
+  const [own, externalPool] = await Promise.all([
+    Event.aggregate([
+      {
+        $geoNear: {
+          near: { type: 'Point', coordinates: [lng, lat] },
+          distanceField: '_distanceKm',
+          distanceMultiplier: 0.001,
+          maxDistance: radius * 1000,
+          spherical: true,
+          query: { status: { $nin: ['pending', 'cancel', 'draft'] }, ...eventDateFilter(startDate, endDate, today) },
+        },
+      },
+      { $sort: { _distanceKm: 1, start_date: 1 } },
+    ]),
+    externalEventsNear(lat, lng, radius, tmFilters),
+  ]);
+
+  own.forEach((e) => (e.id = String(e._id))); // aggregate() returns plain objects — no automatic `id` virtual
+  const entries = own.map((e) => ({ kind: 'db', doc: e, distance: e._distanceKm, startDate: e.start_date }));
+
+  // The Ticketmaster radius filter is approximate and venues occasionally ship
+  // with no coordinates at all, so every external hit is re-measured against the
+  // real radius before it is allowed to count toward the result set.
+  for (const ext of externalPool) {
+    if (ext.location_lat === null || ext.location_long === null) continue;
+    if (!externalInDateWindow(ext, startDate, endDate, today)) continue;
+    const distance = haversineDistanceKm(lat, lng, ext.location_lat, ext.location_long);
+    if (distance > radius) continue;
+    entries.push({ kind: 'external', item: ext, distance, startDate: ext.start_date });
+  }
+
+  const total = entries.length;
+  if (total === 0) {
+    return { data: [], pagination: {}, radius_km: radius, _message: 'No events found in your area.' };
+  }
+
+  entries.sort(byDistanceThenStart);
+  const pageEntries = entries.slice((page - 1) * perPage, page * perPage);
+
+  const dbDocs = pageEntries.filter((e) => e.kind === 'db').map((e) => e.doc);
+  await Event.populate(dbDocs, [{ path: 'interests', select: 'title' }]);
+  const { reviewStats, visitStats, favouriteEventIds } = await geoPageAggregates(userId, dbDocs);
+
+  const data = pageEntries.map((entry) =>
+    entry.kind === 'db'
+      ? formatSingleEvent(entry.doc, { reviewStats, visitStats, favouriteEventIds, distanceKm: entry.distance })
+      : { ...entry.item, distance_km: Math.round(entry.distance) }
+  );
+
+  return {
+    data,
+    pagination: { current_page: page, per_page: perPage, total, last_page: Math.max(1, Math.ceil(total / perPage)) },
+    radius_km: radius,
+    _message: 'Events fetched successfully.',
+  };
+}
+
+async function getEventsByRoute(userId, startLat, startLng, endLat, endLng, waypoints = [], page = 1, options = {}) {
+  const radius = options.radius > 0 ? options.radius : await getUserRadius(userId);
+  const today = new Date(new Date().toISOString().slice(0, 10)); // midnight UTC boundary, as a real Date (not a string) — aggregate() pipelines skip Mongoose's auto-casting
+  const perPage = GEO_PER_PAGE;
 
   const routePoints = [{ lat: startLat, lng: startLng }, ...waypoints.map((w) => ({ lat: Number(w.lat), lng: Number(w.lng) })), { lat: endLat, lng: endLng }];
 
@@ -594,48 +750,63 @@ async function getEventsByRoute(userId, startLat, startLng, endLat, endLng, wayp
     events_found: eventsFound,
   });
 
-  const candidates = await Event.find({
-    status: { $nin: ['pending', 'cancel', 'draft'] },
-    end_date: { $gte: today },
-    location_lat: { $ne: null, $gte: minLat, $lte: maxLat },
-    location_long: { $ne: null, $gte: minLng, $lte: maxLng },
-  }).populate('interests', 'title');
-
-  if (candidates.length === 0) {
-    return { data: [], pagination: {}, route_info: buildRouteInfo(0), _message: 'No events found along this route.' };
-  }
-
-  const distances = new Map();
-  candidates.forEach((event) => {
-    let minDistance = Infinity;
+  const distanceToRoute = (pointLat, pointLng) => {
+    let min = Infinity;
     for (let i = 0; i < routePoints.length - 1; i++) {
-      const seg = distanceFromPointToLineSegment(event.location_lat, event.location_long, routePoints[i].lat, routePoints[i].lng, routePoints[i + 1].lat, routePoints[i + 1].lng);
-      minDistance = Math.min(minDistance, seg);
+      min = Math.min(min, distanceFromPointToLineSegment(pointLat, pointLng, routePoints[i].lat, routePoints[i].lng, routePoints[i + 1].lat, routePoints[i + 1].lng));
     }
-    if (minDistance <= radius) {
-      distances.set(String(event._id), Math.round(minDistance * 100) / 100);
-    }
-  });
+    return min;
+  };
 
-  if (distances.size === 0) {
-    return { data: [], pagination: {}, route_info: buildRouteInfo(0), _message: 'No events found within your radius along this route.' };
+  const [candidates, externalPool] = await Promise.all([
+    // Bounding box first, so the point-to-segment maths below only runs on events
+    // that could plausibly fall within the radius of the route.
+    Event.find({
+      status: { $nin: ['pending', 'cancel', 'draft'] },
+      ...eventDateFilter(null, null, today),
+      location_lat: { $ne: null, $gte: minLat, $lte: maxLat },
+      location_long: { $ne: null, $gte: minLng, $lte: maxLng },
+    }).populate('interests', 'title'),
+    externalEventsAlongRoute(routePoints, radius),
+  ]);
+
+  const entries = [];
+  for (const event of candidates) {
+    const distance = distanceToRoute(event.location_lat, event.location_long);
+    if (distance <= radius) entries.push({ kind: 'db', doc: event, distance, startDate: event.start_date });
+  }
+  for (const ext of externalPool) {
+    if (ext.location_lat === null || ext.location_long === null) continue;
+    if (!externalInDateWindow(ext, null, null, today)) continue;
+    const distance = distanceToRoute(ext.location_lat, ext.location_long);
+    if (distance <= radius) entries.push({ kind: 'external', item: ext, distance, startDate: ext.start_date });
   }
 
-  const filtered = candidates.filter((e) => distances.has(String(e._id)));
-  filtered.sort((a, b) => {
-    const d = distances.get(String(a._id)) - distances.get(String(b._id));
-    return d !== 0 ? d : a.start_date - b.start_date;
-  });
+  const total = entries.length;
+  if (total === 0) {
+    // The two messages are distinguished the way they always were — by whether
+    // the bounding box turned up anything at all — so a stray external row
+    // cannot flip which one the caller sees.
+    return {
+      data: [],
+      pagination: {},
+      route_info: buildRouteInfo(0),
+      _message: candidates.length === 0 ? 'No events found along this route.' : 'No events found within your radius along this route.',
+    };
+  }
 
-  const total = filtered.length;
-  const pageItems = filtered.slice((page - 1) * perPage, page * perPage);
+  entries.sort(byDistanceThenStart);
+  const pageEntries = entries.slice((page - 1) * perPage, page * perPage);
 
-  const [reviewStats, visitStats] = await Promise.all([reviewStatsFor(pageItems.map((e) => e._id)), visitStatsFor(pageItems.map((e) => e._id))]);
-  const favouriteEventIds = new Set((await Event.find({ favourited_by: userId }).select('_id')).map((e) => String(e._id)));
+  const dbDocs = pageEntries.filter((e) => e.kind === 'db').map((e) => e.doc);
+  const { reviewStats, visitStats, favouriteEventIds } = await geoPageAggregates(userId, dbDocs);
 
-  const data = pageItems.map((e) => {
-    const formatted = formatSingleEvent(e, { reviewStats, visitStats, favouriteEventIds, distanceKm: null });
-    formatted.distance_from_route_km = distances.get(String(e._id));
+  const data = pageEntries.map((entry) => {
+    const formatted =
+      entry.kind === 'db'
+        ? formatSingleEvent(entry.doc, { reviewStats, visitStats, favouriteEventIds, distanceKm: null })
+        : { ...entry.item, distance_km: null }; // distance here is measured to the route, not to any one point
+    formatted.distance_from_route_km = Math.round(entry.distance * 100) / 100;
     return formatted;
   });
 
