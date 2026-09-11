@@ -81,8 +81,12 @@ async function queryEvents(matchQuery, { lat, lng, maxDistanceKm, sort, limit, s
         },
       },
     ];
-    if (sort === 'distance') pipeline.push({ $sort: { _distanceKm: 1 } });
-    else pipeline.push({ $sort: { start_date: 1 } });
+    // _id makes the ordering total. Without it, events sharing a start date (or
+    // an exact distance) can come back in a different relative order on each
+    // query, so skip/limit hands the same document out on two pages and silently
+    // drops another.
+    if (sort === 'distance') pipeline.push({ $sort: { _distanceKm: 1, _id: 1 } });
+    else pipeline.push({ $sort: { start_date: 1, _id: 1 } });
     if (skip) pipeline.push({ $skip: skip });
     if (limit) pipeline.push({ $limit: limit });
 
@@ -93,27 +97,39 @@ async function queryEvents(matchQuery, { lat, lng, maxDistanceKm, sort, limit, s
 
   let query = Event.find(matchQuery)
     .populate('interests', 'title')
-    .sort({ start_date: 1 })
+    .sort({ start_date: 1, _id: 1 })
     .skip(skip);
   if (limit) query = query.limit(limit);
   return query;
 }
 
-async function getExternalEventPool(lat, lng, radius, filters) {
+const EXTERNAL_MIN_POOL = 20; // page 1 stays exactly as cheap as it was before
+const EXTERNAL_MAX_POOL = 200; // Discovery API ceiling
+
+async function getExternalEventPool(lat, lng, radius, filters, size = EXTERNAL_MIN_POOL) {
   if (!env.ticketmaster.enabled) return [];
 
   const bucket = lat !== null && lat !== undefined && lng !== null && lng !== undefined ? `${Math.round(lat * 100) / 100},${Math.round(lng * 100) / 100}` : 'any';
-  const key = `public_ext:tm:${bucket}:${radius}:${JSON.stringify(filters)}`;
+  // size is part of the key: page 1 caches a short pool, and a deeper page asking
+  // for a longer one must not be handed that truncated entry.
+  const key = `public_ext:tm:${bucket}:${radius}:${size}:${JSON.stringify(filters)}`;
 
-  return ttlCache.remember(key, 30 * 60 * 1000, () => ticketmaster.search(lat, lng, radius, 20, filters));
+  return ttlCache.remember(key, 30 * 60 * 1000, () => ticketmaster.search(lat, lng, radius, size, filters));
 }
 
-async function externalEvents(lat, lng, radius, limit, filters = {}) {
-  let pool = await getExternalEventPool(lat, lng, radius, filters);
+/**
+ * One page of Ticketmaster results. `offset` is what stops a paged search from
+ * replaying the same first rows on every page: the pool is fetched deep enough to
+ * reach the requested page, then sliced there. Callers that only ever want the
+ * first slice (the landing dashboard) can leave it at 0.
+ */
+async function externalEvents(lat, lng, radius, limit, filters = {}, offset = 0) {
+  const size = Math.min(EXTERNAL_MAX_POOL, Math.max(EXTERNAL_MIN_POOL, offset + limit));
+  let pool = await getExternalEventPool(lat, lng, radius, filters, size);
   if (pool.length === 0 && lat !== null && lat !== undefined && lng !== null && lng !== undefined) {
-    pool = await getExternalEventPool(40.73, -73.93, 500, filters);
+    pool = await getExternalEventPool(40.73, -73.93, 500, filters, size);
   }
-  return pool.slice(0, Math.max(1, limit)).map(({ is_favt, favt_id, ...rest }) => rest);
+  return pool.slice(offset, offset + Math.max(1, limit)).map(({ is_favt, favt_id, ...rest }) => rest);
 }
 
 // ── Global search ────────────────────────────────────────────────────────────
@@ -167,7 +183,8 @@ async function searchEvents(params) {
   let formatted = await formatEventList(events);
 
   if (!params.interest_ids || !params.interest_ids.length) {
-    formatted = formatted.concat(await externalEvents(lat, lng, radius, perPage, { keyword, start_date: params.start_date, end_date: params.end_date }));
+    const filters = { keyword, start_date: params.start_date, end_date: params.end_date };
+    formatted = formatted.concat(await externalEvents(lat, lng, radius, perPage, filters, (page - 1) * perPage));
   }
 
   return formatted;

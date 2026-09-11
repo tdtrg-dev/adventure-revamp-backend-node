@@ -80,7 +80,13 @@ async function signup(body) {
 
 async function login(email, password) {
   const user = await User.findOne({ email }).select('+password');
-  if (!user || !(await bcrypt.compare(password, user.password))) {
+  if (!user) {
+    const err = new Error('This email is not registered.');
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (!(await bcrypt.compare(password, user.password))) {
     const err = new Error('Invalid password');
     err.statusCode = 400;
     throw err;
