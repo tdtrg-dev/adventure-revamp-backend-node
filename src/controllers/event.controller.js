@@ -94,7 +94,12 @@ const getEventsByLocation = asyncHandler(async (req, res) => {
     req.body.user_id,
     Number(req.body.currentLat),
     Number(req.body.currentLang),
-    Number(req.body.page) || 1
+    Number(req.body.page) || 1,
+    {
+      radius: req.body.radius !== undefined ? Number(req.body.radius) : null,
+      startDate: req.body.start_date || null,
+      endDate: req.body.end_date || null,
+    }
   );
   return success(res, result, _message);
 });
@@ -107,7 +112,8 @@ const getEventsByRoute = asyncHandler(async (req, res) => {
     Number(req.body.end_lat),
     Number(req.body.end_lng),
     req.body.waypoints || [],
-    Number(req.body.page) || 1
+    Number(req.body.page) || 1,
+    { radius: req.body.radius !== undefined ? Number(req.body.radius) : null }
   );
   return success(res, result, _message);
 });
