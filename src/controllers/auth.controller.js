@@ -48,13 +48,22 @@ const resendEmailOtp = asyncHandler(async (req, res) => {
 });
 
 const forgotPassword = asyncHandler(async (req, res) => {
-  await authService.forgotPassword(req.body.email);
-  return success(res, [], 'Password reset link sent to your email.');
+  const { email, expiresInSeconds, resendAvailableInSeconds } = await authService.forgotPassword(req.body.email);
+  return success(
+    res,
+    { email, expires_in_seconds: expiresInSeconds, resend_available_in_seconds: resendAvailableInSeconds },
+    "We've sent a password reset code to your email."
+  );
+});
+
+const verifyResetOtp = asyncHandler(async (req, res) => {
+  const { resetToken, expiresInSeconds } = await authService.verifyResetOtp(req.body.email, req.body.otp);
+  return success(res, { reset_token: resetToken, expires_in_seconds: expiresInSeconds }, 'Code verified. You can now set a new password.');
 });
 
 const resetPassword = asyncHandler(async (req, res) => {
-  await authService.resetPassword(req.body.email, req.body.token, req.body.password);
-  return success(res, [], 'Password reset successfully. Please login.');
+  await authService.resetPassword(req.body.email, req.body.reset_token, req.body.password);
+  return success(res, [], 'Password reset successfully. Please log in.');
 });
 
 module.exports = {
@@ -65,5 +74,6 @@ module.exports = {
   verifyEmailOtp,
   resendEmailOtp,
   forgotPassword,
+  verifyResetOtp,
   resetPassword,
 };

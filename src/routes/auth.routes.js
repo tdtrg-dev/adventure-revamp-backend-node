@@ -12,6 +12,7 @@ router.post('/signup', authRateLimit, validate(v.signup), controller.signup);
 router.post('/login', authRateLimit, validate(v.login), controller.login);
 router.post('/social-login', authRateLimit, validate(v.socialLogin), controller.socialLogin);
 router.post('/forgot-password', authRateLimit, validate(v.forgotPassword), controller.forgotPassword);
+router.post('/verify-reset-otp', authRateLimit, validate(v.verifyResetOtp), controller.verifyResetOtp);
 router.post('/reset-password', authRateLimit, validate(v.resetPassword), controller.resetPassword);
 router.post('/verify-email-otp', authRateLimit, validate(v.verifyEmailOtp), controller.verifyEmailOtp);
 router.post('/resend-email-otp', authRateLimit, validate(v.resendEmailOtp), controller.resendEmailOtp);

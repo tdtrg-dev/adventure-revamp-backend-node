@@ -45,14 +45,38 @@ const resendEmailOtp = Joi.object({
 });
 
 const forgotPassword = Joi.object({
-  email: Joi.string().email().required(),
+  email: emailField(),
 });
 
+const verifyResetOtp = Joi.object({
+  email: emailField(),
+  otp: otpCode(),
+});
+
+const INVALID_RESET_SESSION = 'This reset session is invalid. Please request a new code.';
+
 const resetPassword = Joi.object({
-  token: Joi.string().required(),
-  email: Joi.string().email().required(),
-  password: Joi.string().min(8).required(),
-  password_confirmation: Joi.string().valid(Joi.ref('password')).required(),
+  email: emailField(),
+  // 32 random bytes as hex, issued by /verify-reset-otp
+  reset_token: Joi.string().hex().length(64).required().messages({
+    'string.base': INVALID_RESET_SESSION,
+    'string.hex': INVALID_RESET_SESSION,
+    'string.length': INVALID_RESET_SESSION,
+    'string.empty': 'Reset token is required.',
+    'any.required': 'Reset token is required.',
+  }),
+  password: Joi.string().min(8).required().messages({
+    'string.base': 'Password is required.',
+    'string.empty': 'Password is required.',
+    'string.min': 'Password must be at least 8 characters.',
+    'any.required': 'Password is required.',
+  }),
+  password_confirmation: Joi.string().valid(Joi.ref('password')).required().messages({
+    'any.only': 'Passwords do not match.',
+    'string.base': 'Please confirm your new password.',
+    'string.empty': 'Please confirm your new password.',
+    'any.required': 'Please confirm your new password.',
+  }),
 });
 
 const getAllUsers = Joi.object({
@@ -97,6 +121,7 @@ module.exports = {
   verifyEmailOtp,
   resendEmailOtp,
   forgotPassword,
+  verifyResetOtp,
   resetPassword,
   getAllUsers,
   getUserProfile,
