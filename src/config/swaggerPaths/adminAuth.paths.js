@@ -6,7 +6,11 @@ module.exports = {
       tags: ['Admin'],
       summary: 'Admin login (shares the same JWT guard as regular users — no role enforcement)',
       ...body('AdminLogin'),
-      responses: { 200: ok('Logged in successfully.'), 400: err('Invalid credentials.') },
+      responses: {
+        200: ok('Logged in successfully.'),
+        400: err('Email not registered (data.email), incorrect password (data.password), or invalid input.'),
+        403: err('Account deactivated.'),
+      },
     },
   },
   '/admin/logout': {

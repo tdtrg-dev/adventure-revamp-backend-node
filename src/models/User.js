@@ -47,6 +47,11 @@ const userSchema = new Schema(
     email_verified_at: { type: Date, default: null },
     password_reset_token: { type: String, default: null, select: false },
     password_reset_expires: { type: Date, default: null, select: false },
+    // Email-verification OTP (see sendEmailOtp / verifyEmailOtp in auth.service).
+    email_otp_hash: { type: String, default: null, select: false },
+    email_otp_expires_at: { type: Date, default: null, select: false },
+    email_otp_attempts: { type: Number, default: 0, select: false },
+    email_otp_last_sent_at: { type: Date, default: null, select: false },
 
     profile: { type: profileSchema, default: () => ({}) },
     wallet: { type: walletSchema, default: () => ({}) },

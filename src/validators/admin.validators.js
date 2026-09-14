@@ -1,9 +1,9 @@
 const Joi = require('joi');
-const { objectId } = require('./common');
+const { objectId, emailField, passwordField } = require('./common');
 
 const login = Joi.object({
-  email: Joi.string().email().required(),
-  password: Joi.string().required(),
+  email: emailField(),
+  password: passwordField(),
 });
 
 const companyCategory = Joi.object({ title: Joi.string().required() });

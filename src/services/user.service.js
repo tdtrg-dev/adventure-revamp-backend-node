@@ -62,7 +62,9 @@ async function updateUserCoreProfile(userId, body) {
 
   user.name = body.name;
   user.user_type = body.user_type;
-  if (body.email) user.email = body.email;
+  // Email is deliberately not updatable: it is the address proven by the signup
+  // OTP, and letting it change here would keep the account verified for an
+  // address nobody has confirmed.
   if (body.password) user.password = await bcrypt.hash(body.password, 10);
 
   if (body.gender) user.profile.gender = body.gender;

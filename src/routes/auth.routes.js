@@ -13,9 +13,8 @@ router.post('/login', authRateLimit, validate(v.login), controller.login);
 router.post('/social-login', authRateLimit, validate(v.socialLogin), controller.socialLogin);
 router.post('/forgot-password', authRateLimit, validate(v.forgotPassword), controller.forgotPassword);
 router.post('/reset-password', authRateLimit, validate(v.resetPassword), controller.resetPassword);
-router.post('/resend-verification-email', authRateLimit, validate(v.resendVerificationEmail), controller.resendVerificationEmail);
-router.get('/email/verify/:id/:hash', controller.verifyEmail);
-router.post('/email/verify/:id/:hash', controller.verifyEmail);
+router.post('/verify-email-otp', authRateLimit, validate(v.verifyEmailOtp), controller.verifyEmailOtp);
+router.post('/resend-email-otp', authRateLimit, validate(v.resendEmailOtp), controller.resendEmailOtp);
 
 // ── Protected ───────────────────────────────────────────────────────────────
 router.post('/logout', authenticate, controller.logout);
