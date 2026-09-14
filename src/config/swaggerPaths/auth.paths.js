@@ -42,22 +42,41 @@ module.exports = {
   '/forgot-password': {
     post: {
       tags: ['Auth'],
-      summary: 'Request a password-reset email',
+      summary: 'Forgot password, step 1 of 3 — email a 6-digit reset code',
+      description:
+        'Also serves as resend. Replaces any earlier reset code and voids any reset_token from an earlier step 2. Codes expire after 10 minutes; one request per 60 seconds per account.',
       ...body('AuthForgotPassword'),
       responses: {
-        200: ok('Reset link sent (if the email exists).'),
-        400: err('Unable to send the reset link.'),
+        200: ok('Code sent — data has expires_in_seconds and resend_available_in_seconds.'),
+        400: err('Email not registered (data.email) or invalid input.'),
+        429: err('Requested too soon — data.retry_after_seconds says how long to wait.'),
+        503: err('The email could not be sent; try again.'),
+      },
+    },
+  },
+  '/verify-reset-otp': {
+    post: {
+      tags: ['Auth'],
+      summary: 'Forgot password, step 2 of 3 — exchange the emailed code for a reset_token',
+      description: 'Codes allow 5 attempts. The returned reset_token is single-use and valid for 15 minutes.',
+      ...body('AuthVerifyResetOtp'),
+      responses: {
+        200: ok('Code accepted — data has reset_token and expires_in_seconds.'),
+        400: err('Email not registered (data.email), or the code is incorrect, expired, or no longer active (data.otp).'),
+        429: err('Too many incorrect attempts — request a new code.'),
       },
     },
   },
   '/reset-password': {
     post: {
       tags: ['Auth'],
-      summary: 'Reset a password using an emailed token',
+      summary: 'Forgot password, step 3 of 3 — set a new password with the reset_token',
+      description:
+        'Signs out every existing session on the account and marks the email verified if it was not. No accessToken is returned; the user logs in with the new password.',
       ...body('AuthResetPassword'),
       responses: {
         200: ok('Password updated.'),
-        400: err('Invalid or expired token.'),
+        400: err('Email not registered, invalid input, or the reset_token is invalid, expired, or already used (data.reset_token).'),
       },
     },
   },

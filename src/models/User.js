@@ -52,6 +52,12 @@ const userSchema = new Schema(
     email_otp_expires_at: { type: Date, default: null, select: false },
     email_otp_attempts: { type: Number, default: 0, select: false },
     email_otp_last_sent_at: { type: Date, default: null, select: false },
+    // Password-reset OTP (forgot password steps 1-2). The reset token that step 2
+    // hands out lives in password_reset_token / password_reset_expires above.
+    password_reset_otp_hash: { type: String, default: null, select: false },
+    password_reset_otp_expires_at: { type: Date, default: null, select: false },
+    password_reset_otp_attempts: { type: Number, default: 0, select: false },
+    password_reset_otp_last_sent_at: { type: Date, default: null, select: false },
 
     profile: { type: profileSchema, default: () => ({}) },
     wallet: { type: walletSchema, default: () => ({}) },
