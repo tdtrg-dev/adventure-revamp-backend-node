@@ -2,21 +2,30 @@ const bcrypt = require('bcrypt');
 const Admin = require('../models/Admin');
 const { issueToken, revokeToken } = require('../utils/token');
 
-function fail(message, code = 400) {
+function fail(message, code = 400, data = []) {
   const err = new Error(message);
   err.statusCode = code;
+  err.data = data;
   return err;
+}
+
+/** Keyed by the offending field — the same shape the validate middleware uses. */
+function fieldError(field, message) {
+  return fail(message, 400, { [field]: [message] });
 }
 
 async function login(email, password) {
   const admin = await Admin.findOne({ email }).select('+password');
-  if (!admin) throw fail('This email is not registered.');
+  if (!admin) throw fieldError('email', 'This email is not registered.');
   
   if (!admin.is_active) throw fail('Your account has been deactivated. Please contact support.', 403);
-  if (!(await bcrypt.compare(password, admin.password))) throw fail('Invalid password.');
+  if (!(await bcrypt.compare(password, admin.password))) throw fieldError('password', 'The password you entered is incorrect.');
 
   const accessToken = await issueToken(admin._id, 'admin');
-  return { admin, accessToken };
+  // Read with +password for the check above; the hash must not ride along into the response.
+  const safeAdmin = admin.toJSON();
+  delete safeAdmin.password;
+  return { admin: safeAdmin, accessToken };
 }
 
 async function logout(jti) {

@@ -1,5 +1,5 @@
 const Joi = require('joi');
-const { objectId } = require('./common');
+const { objectId, emailField, passwordField, otpCode } = require('./common');
 
 const signup = Joi.object({
   id: objectId().allow(null, '', 0).optional(),
@@ -22,8 +22,8 @@ const signup = Joi.object({
 }).unknown(true);
 
 const login = Joi.object({
-  email: Joi.string().email().required(),
-  password: Joi.string().required(),
+  email: emailField(),
+  password: passwordField(),
   current_lat: Joi.number().allow(null),
   current_long: Joi.number().allow(null),
   full_address: Joi.string().allow(null, ''),
@@ -35,8 +35,13 @@ const socialLogin = Joi.object({
   user_type: Joi.string().valid('user', 'company').allow(null),
 });
 
-const resendVerificationEmail = Joi.object({
-  user_id: objectId().required(),
+const verifyEmailOtp = Joi.object({
+  email: emailField(),
+  otp: otpCode(),
+});
+
+const resendEmailOtp = Joi.object({
+  email: emailField(),
 });
 
 const forgotPassword = Joi.object({
@@ -73,7 +78,7 @@ const deleteUserProfile = Joi.object({
 const updateProfile = Joi.object({
   user_id: objectId().required(),
   name: Joi.string().max(255).required(),
-  email: Joi.string().email().max(255).required(),
+  email: Joi.string().email().max(255), // accepted for backward compatibility, never applied — see updateUserCoreProfile
   user_type: Joi.string().valid('user', 'company').required(),
   phone: Joi.string().max(20).allow(null, ''),
   dob: Joi.date().allow(null, ''),
@@ -89,7 +94,8 @@ module.exports = {
   signup,
   login,
   socialLogin,
-  resendVerificationEmail,
+  verifyEmailOtp,
+  resendEmailOtp,
   forgotPassword,
   resetPassword,
   getAllUsers,

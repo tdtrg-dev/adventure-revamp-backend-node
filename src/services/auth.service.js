@@ -9,35 +9,146 @@ const env = require('../config/env');
 const presenceService = require('./presence.service');
 const { datetimeStr, diffForHumans } = require('../utils/dateFormat');
 
+// Email-verification OTP policy. The 6-digit format is mirrored by otpCode() in
+// validators/common.js — change both together.
+const OTP_LENGTH = 6;
+const OTP_TTL_MS = 10 * 60 * 1000;
+const OTP_MAX_ATTEMPTS = 5;
+const OTP_RESEND_COOLDOWN_MS = 60 * 1000;
+const OTP_FIELDS = '+email_otp_hash +email_otp_expires_at +email_otp_attempts +email_otp_last_sent_at';
+
+// Loaded only to be checked — never allowed onto the wire.
+const SECRET_USER_FIELDS = [
+  'password',
+  'password_reset_token',
+  'password_reset_expires',
+  'email_otp_hash',
+  'email_otp_expires_at',
+  'email_otp_attempts',
+  'email_otp_last_sent_at',
+];
+
+function fail(message, code = 400, data = []) {
+  const err = new Error(message);
+  err.statusCode = code;
+  err.data = data;
+  return err;
+}
+
+/** Error whose `data` is keyed by the offending field — the same shape the validate middleware uses, so the app can show it inline. */
+function fieldError(field, message, code = 400) {
+  return fail(message, code, { [field]: [message] });
+}
+
+/**
+ * A user as it goes out in an auth response. `select: false` only applies to
+ * documents read with a projection: one that was just created, or read with
+ * `+password` to check a login, still carries those values and would serialize
+ * them — the bcrypt hash included.
+ */
+function authUser(user) {
+  const json = user.toJSON();
+  SECRET_USER_FIELDS.forEach((field) => delete json[field]);
+  return json;
+}
+
 function recordLoginHistory(userId, lat, long, address) {
   LoginHistory.create({ user_id: userId, latitude: lat || null, longitude: long || null, location: address || null }).catch((e) =>
     console.error('StoreLoginHistory failed:', e.message)
   );
 }
 
-function verificationEmailHtml(url) {
-  return `<p>Please verify your email by clicking the link below:</p><p><a href="${url}">${url}</a></p>`;
-}
-
 function resetPasswordEmailHtml(url) {
   return `<p>You requested a password reset. Click the link below to set a new password:</p><p><a href="${url}">${url}</a></p><p>This link expires in 60 minutes.</p>`;
 }
 
-function sendVerificationEmail(user, baseUrl) {
-  const expiresAt = Math.floor(Date.now() / 1000) + 60 * 60;
-  const hash = crypto.createHash('sha1').update(user.email).digest('hex');
-  const url = `${baseUrl || env.frontendUrl}/verify-email?${new URLSearchParams({
-    id: user.id.toString(),
-    hash,
-    expires: String(expiresAt),
-  })}`;
-  sendEmailViaMailgun(user.email, 'Verify Email', verificationEmailHtml(url)).catch(() => {});
+function emailOtpHtml(otp) {
+  return `<p>Welcome to ${env.appName}!</p><p>Use this code to verify your email address:</p><p style="font-size:28px;font-weight:bold;letter-spacing:6px;margin:16px 0;">${otp}</p><p>This code expires in ${OTP_TTL_MS / 60000} minutes. If you didn't create an account, you can safely ignore this email.</p>`;
+}
+
+/**
+ * Codes are stored as an HMAC keyed with the server secret and bound to the user
+ * id. An unkeyed hash would not protect them: there are only a million 6-digit
+ * codes, so anyone holding a database dump could reverse one by trying them all.
+ */
+function hashOtp(userId, otp) {
+  return crypto.createHmac('sha256', env.jwtSecret).update(`${userId}:${otp}`).digest('hex');
+}
+
+/**
+ * Issues a fresh code — replacing any earlier one — and emails it.
+ *
+ * The resend cooldown is claimed in the same atomic update that stores the code,
+ * so two concurrent requests cannot both send: the loser reports `cooldown`
+ * instead of mailing a second code that would silently invalidate the first. A
+ * failed send releases the cooldown so the user can retry straight away rather
+ * than wait out a code they never received.
+ *
+ * @returns {Promise<{ sent: true } | { sent: false, reason: 'cooldown', retryAfterSeconds: number } | { sent: false, reason: 'delivery_failed' }>}
+ */
+async function sendEmailOtp(userId) {
+  const now = new Date();
+  const otp = String(crypto.randomInt(0, 10 ** OTP_LENGTH)).padStart(OTP_LENGTH, '0');
+
+  const user = await User.findOneAndUpdate(
+    {
+      _id: userId,
+      email_verified_at: null,
+      $or: [{ email_otp_last_sent_at: null }, { email_otp_last_sent_at: { $lte: new Date(now.getTime() - OTP_RESEND_COOLDOWN_MS) } }],
+    },
+    {
+      $set: {
+        email_otp_hash: hashOtp(userId, otp),
+        email_otp_expires_at: new Date(now.getTime() + OTP_TTL_MS),
+        email_otp_attempts: 0,
+        email_otp_last_sent_at: now,
+      },
+    },
+    { new: true }
+  );
+
+  if (!user) {
+    const current = await User.findById(userId).select('+email_otp_last_sent_at');
+    const lastSent = current?.email_otp_last_sent_at?.getTime() ?? now.getTime();
+    const retryAfterSeconds = Math.max(1, Math.ceil((lastSent + OTP_RESEND_COOLDOWN_MS - now.getTime()) / 1000));
+    return { sent: false, reason: 'cooldown', retryAfterSeconds };
+  }
+
+  const delivered = await sendEmailViaMailgun(user.email, `Your ${env.appName} verification code`, emailOtpHtml(otp));
+  if (!delivered) {
+    await User.updateOne({ _id: userId, email_otp_last_sent_at: now }, { $set: { email_otp_last_sent_at: null } });
+    return { sent: false, reason: 'delivery_failed' };
+  }
+  return { sent: true };
+}
+
+/** Banned and suspended accounts get no session, whichever route they arrive by. */
+function assertAccountActive(user) {
+  if (user.is_banned) {
+    throw fail('Your account has been permanently banned from the platform.', 403);
+  }
+
+  if (user.suspended_until && user.suspended_until > new Date()) {
+    const remaining = diffForHumans(user.suspended_until);
+    throw fail(`Your account is temporarily suspended. Please try again in ${remaining}.`, 403, { suspended_until: datetimeStr(user.suspended_until) });
+  }
+}
+
+function unverifiedLoginError(email, otp) {
+  let message = `Please verify your email. We've sent a verification code to ${email}.`;
+  if (otp.reason === 'cooldown') message = `Please verify your email using the code we sent to ${email}.`;
+  if (otp.reason === 'delivery_failed') message = "Please verify your email. We couldn't send a new code right now, so please request one again.";
+
+  const data = { email_verified: false, email, otp_sent: otp.sent };
+  if (otp.reason === 'cooldown') data.retry_after_seconds = otp.retryAfterSeconds;
+  return fail(message, 403, data);
 }
 
 async function signup(body) {
   const { id, name, email, user_type, password, gender, dob, phone, bio, radius, google_id, current_lat, current_long, full_address } = body;
 
   let user;
+  let otp = null;
   if (!id || id === 0) {
     if (await User.findOne({ email })) {
       const err = new Error('The email already exists- Please try logging In');
@@ -54,7 +165,7 @@ async function signup(body) {
       profile: { gender: gender || null, dob: dob || null, phone: phone || null, bio: bio || null, radius: radius || null },
     });
 
-    sendVerificationEmail(user);
+    otp = await sendEmailOtp(user._id);
   } else {
     user = await User.findById(id);
     if (!user) {
@@ -72,42 +183,40 @@ async function signup(body) {
     await user.save();
   }
 
-  const accessToken = await issueToken(user._id, 'user');
   recordLoginHistory(user._id, current_lat, current_long, full_address);
 
-  return { user, accessToken };
+  // No session until the email is proven: verifyEmailOtp hands out the first
+  // token. The id branch (profile completion) still issues one for accounts that
+  // are already verified, such as users who arrived through social login.
+  if (!user.email_verified_at) {
+    return { user: authUser(user), accessToken: null, otp };
+  }
+
+  const accessToken = await issueToken(user._id, 'user');
+  return { user: authUser(user), accessToken, otp };
 }
 
 async function login(email, password) {
   const user = await User.findOne({ email }).select('+password');
   if (!user) {
-    const err = new Error('This email is not registered.');
-    err.statusCode = 400;
-    throw err;
+    throw fieldError('email', 'This email is not registered.');
   }
 
   if (!(await bcrypt.compare(password, user.password))) {
-    const err = new Error('Invalid password');
-    err.statusCode = 400;
-    throw err;
+    throw fieldError('password', 'The password you entered is incorrect.');
   }
 
-  if (user.is_banned) {
-    const err = new Error('Your account has been permanently banned from the platform.');
-    err.statusCode = 403;
-    throw err;
-  }
+  assertAccountActive(user);
 
-  if (user.suspended_until && user.suspended_until > new Date()) {
-    const remaining = diffForHumans(user.suspended_until);
-    const err = new Error(`Your account is temporarily suspended. Please try again in ${remaining}.`);
-    err.statusCode = 403;
-    err.data = { suspended_until: datetimeStr(user.suspended_until) };
-    throw err;
+  // Only reachable with the right password, so it tells nobody anything they
+  // could not already find out — and it saves the user a separate resend call
+  // before they can finish verifying.
+  if (!user.email_verified_at) {
+    throw unverifiedLoginError(user.email, await sendEmailOtp(user._id));
   }
 
   const accessToken = await issueToken(user._id, 'user');
-  return { user, accessToken };
+  return { user: authUser(user), accessToken };
 }
 
 async function socialLogin(provider, accessToken, userType) {
@@ -140,7 +249,7 @@ async function socialLogin(provider, accessToken, userType) {
   }
 
   const jwtToken = await issueToken(user._id, 'user');
-  return { user, accessToken: jwtToken, provider };
+  return { user: authUser(user), accessToken: jwtToken, provider };
 }
 
 async function logout(jti, user) {
@@ -148,48 +257,67 @@ async function logout(jti, user) {
   await revokeToken(jti);
 }
 
-async function verifyEmail(id, hash, expires) {
-  const user = await User.findById(id);
-  if (!user) {
-    const err = new Error('User not found');
-    err.statusCode = 400;
-    throw err;
+async function verifyEmailOtp(email, otp) {
+  const user = await User.findOne({ email }).select(OTP_FIELDS);
+  if (!user) throw fieldError('email', 'This email is not registered.');
+  if (user.email_verified_at) throw fieldError('email', 'This email is already verified. Please log in.');
+  if (!user.email_otp_hash) throw fieldError('otp', 'There is no active code for this email. Please request a new one.');
+  if (user.email_otp_attempts >= OTP_MAX_ATTEMPTS) throw fieldError('otp', 'Too many incorrect attempts. Please request a new code.', 429);
+  if (user.email_otp_expires_at <= new Date()) throw fieldError('otp', 'This code has expired. Please request a new one.');
+
+  // Spend the attempt before comparing. Concurrent guesses each consume one, so no
+  // burst of parallel requests gets more than OTP_MAX_ATTEMPTS tries at a code;
+  // matching on the hash also means a code replaced mid-flight is not the one
+  // being guessed against.
+  const claimed = await User.findOneAndUpdate(
+    {
+      _id: user._id,
+      email_verified_at: null,
+      email_otp_hash: user.email_otp_hash,
+      email_otp_attempts: { $lt: OTP_MAX_ATTEMPTS },
+      email_otp_expires_at: { $gt: new Date() },
+    },
+    { $inc: { email_otp_attempts: 1 } },
+    { new: true }
+  ).select(OTP_FIELDS);
+  if (!claimed) throw fieldError('otp', 'This code is no longer valid. Please request a new one.');
+
+  const matches = crypto.timingSafeEqual(Buffer.from(claimed.email_otp_hash, 'hex'), Buffer.from(hashOtp(claimed._id, otp), 'hex'));
+  if (!matches) {
+    const left = OTP_MAX_ATTEMPTS - claimed.email_otp_attempts;
+    if (left <= 0) throw fieldError('otp', 'Too many incorrect attempts. Please request a new code.', 429);
+    throw fieldError('otp', `The code you entered is incorrect. You have ${left} ${left === 1 ? 'attempt' : 'attempts'} left.`);
   }
 
-  const expected = crypto.createHash('sha1').update(user.email).digest('hex');
-  if (!crypto.timingSafeEqual(Buffer.from(hash), Buffer.from(expected))) {
-    const err = new Error('Invalid verification link');
-    err.statusCode = 400;
-    throw err;
-  }
+  const verified = await User.findOneAndUpdate(
+    { _id: claimed._id, email_verified_at: null, email_otp_hash: claimed.email_otp_hash },
+    { $set: { email_verified_at: new Date(), email_otp_hash: null, email_otp_expires_at: null, email_otp_attempts: 0 } },
+    { new: true }
+  );
+  if (!verified) throw fieldError('otp', 'This code is no longer valid. Please request a new one.');
 
-  if (expires && Number(expires) < Math.floor(Date.now() / 1000)) {
-    const err = new Error('Verification link expired');
-    err.statusCode = 400;
-    throw err;
-  }
+  // The address is proven either way; a banned or suspended account just does not
+  // get a session out of it.
+  assertAccountActive(verified);
 
-  if (user.email_verified_at) {
-    return { alreadyVerified: true };
-  }
-
-  user.email_verified_at = new Date();
-  await user.save();
-  return { alreadyVerified: false };
+  const accessToken = await issueToken(verified._id, 'user');
+  return { user: authUser(verified), accessToken };
 }
 
-async function resendVerificationEmail(userId, baseUrl) {
-  const user = await User.findById(userId);
-  if (!user) {
-    const err = new Error('User not found');
-    err.statusCode = 400;
-    throw err;
+async function resendEmailOtp(email) {
+  const user = await User.findOne({ email });
+  if (!user) throw fieldError('email', 'This email is not registered.');
+  if (user.email_verified_at) throw fieldError('email', 'This email is already verified. Please log in.');
+
+  const otp = await sendEmailOtp(user._id);
+  if (otp.reason === 'cooldown') {
+    throw fail(`Please wait ${otp.retryAfterSeconds} seconds before requesting a new code.`, 429, { retry_after_seconds: otp.retryAfterSeconds });
   }
-  if (user.email_verified_at) {
-    return { alreadyVerified: true };
+  if (!otp.sent) {
+    throw fail("We couldn't send the verification code right now. Please try again shortly.", 503);
   }
-  sendVerificationEmail(user, baseUrl);
-  return { alreadyVerified: false };
+
+  return { email: user.email, expiresInSeconds: OTP_TTL_MS / 1000, resendAvailableInSeconds: OTP_RESEND_COOLDOWN_MS / 1000 };
 }
 
 async function forgotPassword(email) {
@@ -231,8 +359,8 @@ module.exports = {
   login,
   socialLogin,
   logout,
-  verifyEmail,
-  resendVerificationEmail,
+  verifyEmailOtp,
+  resendEmailOtp,
   forgotPassword,
   resetPassword,
 };

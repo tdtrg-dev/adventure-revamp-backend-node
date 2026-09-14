@@ -3,8 +3,17 @@ const { success, error } = require('../utils/response');
 const authService = require('../services/auth.service');
 
 const signup = asyncHandler(async (req, res) => {
-  const { user, accessToken } = await authService.signup(req.body);
-  return success(res, { user, accessToken }, 'Data saved successfully');
+  const { user, accessToken, otp } = await authService.signup(req.body);
+  if (accessToken) {
+    return success(res, { user, accessToken }, 'Data saved successfully');
+  }
+
+  // Unverified accounts get no token — the app moves to the OTP screen instead.
+  let message = 'Data saved successfully. Please verify your email to continue.';
+  if (otp && otp.sent) message = "Account created. We've sent a verification code to your email.";
+  else if (otp) message = "Account created, but we couldn't send the verification code. Please request a new one.";
+
+  return success(res, { user, email_verification_required: true, otp_sent: Boolean(otp && otp.sent) }, message);
 });
 
 const login = asyncHandler(async (req, res) => {
@@ -24,16 +33,18 @@ const logout = asyncHandler(async (req, res) => {
   return success(res, [], 'Logged out successfully');
 });
 
-const verifyEmail = asyncHandler(async (req, res) => {
-  const { id, hash } = req.params;
-  const { expires } = req.query;
-  const { alreadyVerified } = await authService.verifyEmail(id, hash, expires);
-  return success(res, [], alreadyVerified ? 'Email already verified' : 'Email verified successfully');
+const verifyEmailOtp = asyncHandler(async (req, res) => {
+  const { user, accessToken } = await authService.verifyEmailOtp(req.body.email, req.body.otp);
+  return success(res, { user, accessToken }, 'Email verified successfully.');
 });
 
-const resendVerificationEmail = asyncHandler(async (req, res) => {
-  const { alreadyVerified } = await authService.resendVerificationEmail(req.body.user_id, req.headers.origin);
-  return success(res, [], alreadyVerified ? 'Email is already verified' : 'Verification email sent successfully');
+const resendEmailOtp = asyncHandler(async (req, res) => {
+  const { email, expiresInSeconds, resendAvailableInSeconds } = await authService.resendEmailOtp(req.body.email);
+  return success(
+    res,
+    { email, expires_in_seconds: expiresInSeconds, resend_available_in_seconds: resendAvailableInSeconds },
+    "We've sent a new verification code to your email."
+  );
 });
 
 const forgotPassword = asyncHandler(async (req, res) => {
@@ -51,8 +62,8 @@ module.exports = {
   login,
   socialLogin,
   logout,
-  verifyEmail,
-  resendVerificationEmail,
+  verifyEmailOtp,
+  resendEmailOtp,
   forgotPassword,
   resetPassword,
 };
