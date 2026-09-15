@@ -7,7 +7,7 @@ module.exports = {
       summary: 'Authorize a private Pusher channel subscription',
       description:
         'Called by the Pusher/Echo client (not by app code directly) before subscribing to a private channel — ' +
-        '`private-user.{id}` (own id only) or `private-conversation.{id}` (must be a participant). Framework-native ' +
+        '`private-user.{id}` (own id only) or `private-conversation.{id}` (must be a participant); user tokens only. Framework-native ' +
         'route, not part of this app\'s usual envelope: see PusherAuthResponse/RawMessage.',
       security: [{ bearerAuth: [] }],
       requestBody: {
@@ -26,9 +26,9 @@ module.exports = {
       },
       responses: {
         200: { description: 'Authorized — Pusher auth signature.', ...json('PusherAuthResponse') },
-        400: { description: 'channel_name or socket_id missing.', ...json('RawMessage') },
+        400: { description: 'channel_name or socket_id missing, or socket_id malformed.', ...json('RawMessage') },
         401: { description: 'Missing or invalid token.', ...json('RawMessage') },
-        403: { description: 'Not authorized for this channel.', ...json('RawMessage') },
+        403: { description: 'Not authorized for this channel — including any name without the private- prefix, and admin tokens.', ...json('RawMessage') },
       },
     },
   },

@@ -215,7 +215,7 @@ async function blockUserChat(blocker, conversationId, blockedUserId) {
   });
 
   if (conversationId) {
-    pusher.trigger(`conversation.${conversationId}`, 'ConversationEvent', {
+    pusher.trigger(pusher.conversationChannel(conversationId), 'ConversationEvent', {
       type: 'user_blocked',
       blocker_id: blocker.id,
       blocker_name: blocker.name,
@@ -236,7 +236,7 @@ async function unblockUserChat(blocker, conversationId, blockedUserId) {
   await blockService.unblock(blocker.id, blockedUserId);
 
   if (conversationId) {
-    pusher.trigger(`conversation.${conversationId}`, 'ConversationEvent', {
+    pusher.trigger(pusher.conversationChannel(conversationId), 'ConversationEvent', {
       type: 'user_unblocked',
       blocker_id: blocker.id,
       unblocked_id: blockedUserId,

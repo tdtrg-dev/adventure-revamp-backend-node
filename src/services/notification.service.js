@@ -5,7 +5,7 @@ const { sendToUserTopic } = require('../integrations/firebase');
 /**
  * Mirrors SendPusherNotificationJob — the central fan-out helper: creates a
  * Notification row (unless saveToDb=false), broadcasts a Pusher event on the
- * recipient's private user.{id} channel, and best-effort pushes via Firebase.
+ * recipient's private-user.{id} channel, and best-effort pushes via Firebase.
  * Fire-and-forget from callers (matches the plan's "no queue table" decision).
  */
 async function notifyUser(recipientId, type, payload = {}, { actorId = null, relatedType = null, relatedId = null, title = '', body = '', saveToDb = true } = {}) {
@@ -25,7 +25,7 @@ async function notifyUser(recipientId, type, payload = {}, { actorId = null, rel
     broadcastPayload = { ...payload, notification_id: notification.id };
   }
 
-  pusher.trigger(`user.${recipientId}`, type, broadcastPayload);
+  pusher.trigger(pusher.userChannel(recipientId), type, broadcastPayload);
 
   if (saveToDb) {
     sendToUserTopic(recipientId, { title, body, data: { navigateTo: type } }).catch((e) => console.error('Firebase push failed:', e.message));

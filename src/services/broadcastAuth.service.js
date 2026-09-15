@@ -1,5 +1,8 @@
 const Conversation = require('../models/Conversation');
 
+const OBJECT_ID = /^[0-9a-f]{24}$/i;
+const PRIVATE_PREFIX = 'private-';
+
 // Mirrors routes/channels.php exactly — 3 registered private channels, each a
 // pattern with a `{placeholder}` plus an authorization callback taking the
 // authenticated user and the captured id(s).
@@ -14,14 +17,22 @@ const CHANNELS = [
   },
   {
     pattern: /^conversation\.(?<conversationId>[^.]+)$/,
+    // A malformed id would make Mongoose throw a CastError (a 500). It cannot name
+    // a conversation the user belongs to, so it is simply a denial.
     authorize: async (user, { conversationId }) =>
-      Conversation.exists({ _id: conversationId, 'participants.user_id': user.id }),
+      OBJECT_ID.test(conversationId) && Conversation.exists({ _id: conversationId, 'participants.user_id': user.id }),
   },
 ];
 
-/** Strips Pusher's private-/presence- prefix, same as Laravel's channel-name normalization. */
-function normalizeChannelName(channelName) {
-  return channelName.replace(/^(private|presence)-/, '');
+/**
+ * Only private channels are registered, so only 'private-' names are signed. A
+ * presence- subscription would also need channel_data in the signature (Pusher
+ * rejects it without), a private-encrypted- one needs a master key this app does
+ * not configure, and a public name needs no authorization at all. Returns the
+ * name with the prefix stripped, or null when it is not a private channel.
+ */
+function privateChannelName(channelName) {
+  return channelName.startsWith(PRIVATE_PREFIX) ? channelName.slice(PRIVATE_PREFIX.length) : null;
 }
 
 /**
@@ -31,7 +42,8 @@ function normalizeChannelName(channelName) {
  * this endpoint is "may this user see this channel", not "does this channel exist").
  */
 async function isAuthorized(user, channelName) {
-  const normalized = normalizeChannelName(channelName);
+  const normalized = privateChannelName(channelName);
+  if (normalized === null) return false;
 
   for (const { pattern, authorize } of CHANNELS) {
     const match = normalized.match(pattern);
@@ -41,4 +53,4 @@ async function isAuthorized(user, channelName) {
   return false;
 }
 
-module.exports = { isAuthorized, normalizeChannelName };
+module.exports = { isAuthorized };

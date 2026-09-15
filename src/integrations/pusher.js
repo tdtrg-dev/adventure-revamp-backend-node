@@ -2,9 +2,10 @@ const Pusher = require('pusher');
 const env = require('../config/env');
 
 /**
- * Same Pusher app/credentials as Laravel — services trigger the identical
- * channel names/event names Laravel currently broadcasts (ConversationEvent,
- * UserNotificationEvent, etc.) so no frontend/mobile changes are needed.
+ * Same Pusher app/credentials as Laravel — services trigger the same event names
+ * Laravel broadcasts (ConversationEvent, UserNotificationEvent, etc.). Per-user and
+ * per-conversation events go through userChannel() / conversationChannel() below
+ * so they only ever land on private channels.
  */
 const client = new Pusher({
   appId: env.pusher.appId,
@@ -44,4 +45,19 @@ function authorizeChannel(socketId, channel) {
   return client.authorizeChannel(socketId, channel);
 }
 
-module.exports = { trigger, authorizeChannel };
+/**
+ * Pusher treats a channel as private only when its name starts with 'private-';
+ * any other name is public, and anyone who knows it can subscribe without ever
+ * calling /broadcasting/auth. These events carry message text, notification
+ * previews and presence, so they must only be triggered on these names.
+ * broadcastAuth.service.js authorizes exactly these shapes.
+ */
+function userChannel(userId) {
+  return `private-user.${userId}`;
+}
+
+function conversationChannel(conversationId) {
+  return `private-conversation.${conversationId}`;
+}
+
+module.exports = { trigger, authorizeChannel, userChannel, conversationChannel };

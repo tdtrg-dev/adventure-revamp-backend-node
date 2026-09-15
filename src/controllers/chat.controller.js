@@ -23,7 +23,7 @@ const sendMessage = asyncHandler(async (req, res) => {
 
   const data = await chatService.sendMessage(conversationId, sender.id, req.body.message, messageType);
 
-  pusher.trigger(`conversation.${conversationId}`, 'ConversationEvent', {
+  pusher.trigger(pusher.conversationChannel(conversationId), 'ConversationEvent', {
     type: 'new_message',
     id: data.id,
     sender_id: sender.id,
@@ -62,7 +62,7 @@ const markRead = asyncHandler(async (req, res) => {
   const conversationId = req.body.conversation_id;
   const data = await chatService.markRead(conversationId, reader.id);
 
-  pusher.trigger(`conversation.${conversationId}`, 'ConversationEvent', {
+  pusher.trigger(pusher.conversationChannel(conversationId), 'ConversationEvent', {
     type: 'message_read',
     reader_id: reader.id,
     reader_name: reader.name,
@@ -86,7 +86,7 @@ const typing = asyncHandler(async (req, res) => {
     if (blocked) return error(res, 'Action not allowed.', 403, []);
   }
 
-  pusher.trigger(`conversation.${conversationId}`, 'ConversationEvent', {
+  pusher.trigger(pusher.conversationChannel(conversationId), 'ConversationEvent', {
     type: req.body.is_typing ? 'typing' : 'stop_typing',
     user_id: user.id,
     user_name: user.name,
