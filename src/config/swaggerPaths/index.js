@@ -1,6 +1,7 @@
 // Merges every module's OpenAPI path manifest into one `paths` object — one file
 // per route file in src/routes/, so a route can be traced to its docs directly.
 module.exports = {
+  ...require('./broadcasting.paths'),
   ...require('./auth.paths'),
   ...require('./users.paths'),
   ...require('./onboarding.paths'),

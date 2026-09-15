@@ -3,6 +3,7 @@ const router = express.Router();
 
 router.get('/health', (req, res) => res.json({ status: 'ok' }));
 
+router.use(require('./broadcasting.routes'));
 router.use(require('./auth.routes'));
 router.use(require('./users.routes'));
 router.use(require('./onboarding.routes'));

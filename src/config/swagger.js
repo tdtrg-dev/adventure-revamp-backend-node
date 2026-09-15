@@ -3,7 +3,7 @@ const paths = require('./swaggerPaths');
 const env = require('./env');
 
 /**
- * Shared response-envelope schemas — the Node port replicates 4 distinct shapes
+ * Shared response-envelope schemas — the Node port replicates 5 distinct shapes
  * that exist in the real Laravel app (see project memory for the full history):
  *  - ApiResponse / ApiError: the standard `{success, code, message, data}` envelope
  *    used by ~95% of endpoints (HTTP status === `code`).
@@ -15,6 +15,10 @@ const env = require('./env');
  *  - WebsiteValidationError: the 3 public website-form endpoints, which get
  *    Laravel's raw default FormRequest 422 shape (`{message, errors}`, no
  *    `success`/`code` keys at all).
+ *  - PusherAuthResponse / RawMessage: POST /broadcasting/auth, Laravel's
+ *    framework-native (not Helper::createAPIResponce-based) route — success is
+ *    Pusher's own `{auth}` payload, failures are Laravel's raw default
+ *    exception JSON (`{message}`), not this app's usual envelope at all.
  */
 const envelopeSchemas = {
   ApiResponse: {
@@ -77,6 +81,20 @@ const envelopeSchemas = {
     properties: {
       message: { type: 'string', example: 'The email field is required.' },
       errors: { type: 'object' },
+    },
+  },
+  PusherAuthResponse: {
+    type: 'object',
+    description: "Pusher's own private-channel auth payload — passed straight through, not wrapped.",
+    properties: {
+      auth: { type: 'string', example: 'app-key:8d9c545cda9ef10194122e208b299e6a06071900989b2e0ff0358da265c8bc9f' },
+    },
+  },
+  RawMessage: {
+    type: 'object',
+    description: "Laravel's raw default exception JSON — no `success`/`code`/`data` keys.",
+    properties: {
+      message: { type: 'string' },
     },
   },
 };
@@ -147,6 +165,7 @@ const spec = {
   },
   servers: [{ url: `${env.appUrl || ''}/api`, description: 'API server' }],
   tags: [
+    { name: 'Broadcasting' },
     { name: 'Auth' },
     { name: 'Users' },
     { name: 'Onboarding' },
