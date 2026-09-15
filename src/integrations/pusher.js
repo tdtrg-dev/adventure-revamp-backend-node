@@ -32,4 +32,16 @@ function trigger(channel, event, payload) {
   }
 }
 
-module.exports = { trigger };
+/**
+ * Signs a private-channel subscription request (POST /broadcasting/auth) —
+ * mirrors Laravel's Broadcast::auth(). Unlike trigger(), this is not wrapped in
+ * a fail-soft try/catch: the endpoint's entire job is producing this signature,
+ * so if Pusher isn't configured there's nothing sensible to degrade to — it
+ * should surface as a real error, same as it would in Laravel with broken
+ * Pusher credentials.
+ */
+function authorizeChannel(socketId, channel) {
+  return client.authorizeChannel(socketId, channel);
+}
+
+module.exports = { trigger, authorizeChannel };
