@@ -55,15 +55,19 @@ const verifyResetOtp = Joi.object({
 
 const INVALID_RESET_SESSION = 'This reset session is invalid. Please request a new code.';
 
+// Takes the emailed code directly (otp, with token accepted as an alias) or a
+// reset_token from /verify-reset-otp — exactly one of the two.
 const resetPassword = Joi.object({
   email: emailField(),
+  otp: otpCode()
+    .messages({ 'any.unknown': 'Send either the verification code or the reset token, not both.' })
+    .when('reset_token', { is: Joi.exist(), then: Joi.forbidden(), otherwise: Joi.required() }),
   // 32 random bytes as hex, issued by /verify-reset-otp
-  reset_token: Joi.string().hex().length(64).required().messages({
+  reset_token: Joi.string().hex().length(64).messages({
     'string.base': INVALID_RESET_SESSION,
     'string.hex': INVALID_RESET_SESSION,
     'string.length': INVALID_RESET_SESSION,
-    'string.empty': 'Reset token is required.',
-    'any.required': 'Reset token is required.',
+    'string.empty': INVALID_RESET_SESSION,
   }),
   password: Joi.string().min(8).required().messages({
     'string.base': 'Password is required.',
@@ -77,7 +81,9 @@ const resetPassword = Joi.object({
     'string.empty': 'Please confirm your new password.',
     'any.required': 'Please confirm your new password.',
   }),
-});
+})
+  .rename('token', 'otp', { ignoreUndefined: true })
+  .messages({ 'object.rename.override': 'Send the verification code once, as otp.' });
 
 const getAllUsers = Joi.object({
   current_user_id: objectId().required(),

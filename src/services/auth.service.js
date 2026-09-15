@@ -176,7 +176,8 @@ function codeIssued(user) {
 
 /**
  * Checks a code and, when it matches, clears it in the same atomic update that
- * applies `onSuccess` — so each code works exactly once.
+ * applies `onSuccess` — so each code works exactly once. `onSuccess` may be a
+ * function returning the fields, when producing them is expensive.
  *
  * `guard` is added to every write's filter (email verification uses it so two
  * racing verifications cannot both succeed); `precheck` can reject the account
@@ -219,9 +220,13 @@ async function consumeOtp(purposeName, email, otp, { guard = {}, precheck, onSuc
     throw fieldError('otp', `The code you entered is incorrect. You have ${left} ${left === 1 ? 'attempt' : 'attempts'} left.`);
   }
 
+  // Resolved only once the code has matched, so expensive work such as hashing a
+  // new password is never spent on a wrong guess.
+  const successSet = typeof onSuccess === 'function' ? await onSuccess() : onSuccess;
+
   const consumed = await User.findOneAndUpdate(
     { _id: claimed._id, ...guard, [purpose.hash]: claimed[purpose.hash] },
-    { $set: { [purpose.hash]: null, [purpose.expiresAt]: null, [purpose.attempts]: 0, ...onSuccess } },
+    { $set: { [purpose.hash]: null, [purpose.expiresAt]: null, [purpose.attempts]: 0, ...successSet } },
     { new: true }
   );
   if (!consumed) throw fieldError('otp', 'This code is no longer valid. Please request a new one.');
@@ -402,7 +407,7 @@ async function forgotPassword(email) {
 }
 
 /**
- * Forgot password, step 2: trade the code for a short-lived, single-use reset
+ * Forgot password, optional middle step: trade the code for a short-lived, single-use reset
  * token. Only its hash is stored; the token itself is 256 random bits, so unlike
  * the code it needs no attempt counter.
  */
@@ -417,8 +422,37 @@ async function verifyResetOtp(email, otp) {
   return { resetToken, expiresInSeconds: RESET_TOKEN_TTL_MS / 1000 };
 }
 
-/** Forgot password, step 3: set the new password with the reset token. */
-async function resetPassword(email, resetToken, password) {
+/** Ends every session and marks the inbox proven — what any successful reset does. */
+async function finishPasswordReset(userId) {
+  const now = new Date();
+
+  // Every existing session ends — whoever else holds one may be the reason for the reset.
+  await AuthToken.updateMany({ tokenable_type: 'user', tokenable_id: userId, revoked_at: null }, { $set: { revoked_at: now } });
+
+  // Receiving the code proved the inbox, which is all email verification checks.
+  // An existing verified date is left alone.
+  await User.updateOne(
+    { _id: userId, email_verified_at: null },
+    { $set: { email_verified_at: now, email_otp_hash: null, email_otp_expires_at: null, email_otp_attempts: 0 } }
+  );
+}
+
+/**
+ * Forgot password, final step. Takes either the emailed code directly — one call
+ * with the code and the new password together — or a reset token from
+ * verifyResetOtp. The validator guarantees exactly one of the two.
+ */
+async function resetPassword(email, { otp, resetToken }, password) {
+  if (otp) {
+    const user = await consumeOtp('reset_password', email, otp, {
+      // The new password is written in the same update that spends the code, so a
+      // code can never be used up without the password actually changing.
+      onSuccess: async () => ({ password: await bcrypt.hash(password, 10), password_reset_token: null, password_reset_expires: null }),
+    });
+    await finishPasswordReset(user._id);
+    return;
+  }
+
   const user = await User.findOne({ email });
   if (!user) throw fieldError('email', 'This email is not registered.');
 
@@ -435,17 +469,7 @@ async function resetPassword(email, resetToken, password) {
   const updated = await User.findOneAndUpdate(tokenFilter, { $set: { password: passwordHash, password_reset_token: null, password_reset_expires: null } });
   if (!updated) throw invalid();
 
-  const now = new Date();
-
-  // Every existing session ends — whoever else holds one may be the reason for the reset.
-  await AuthToken.updateMany({ tokenable_type: 'user', tokenable_id: user._id, revoked_at: null }, { $set: { revoked_at: now } });
-
-  // Receiving the code proved the inbox, which is all email verification checks.
-  // An existing verified date is left alone.
-  await User.updateOne(
-    { _id: user._id, email_verified_at: null },
-    { $set: { email_verified_at: now, email_otp_hash: null, email_otp_expires_at: null, email_otp_attempts: 0 } }
-  );
+  await finishPasswordReset(user._id);
 }
 
 module.exports = {

@@ -62,7 +62,7 @@ const verifyResetOtp = asyncHandler(async (req, res) => {
 });
 
 const resetPassword = asyncHandler(async (req, res) => {
-  await authService.resetPassword(req.body.email, req.body.reset_token, req.body.password);
+  await authService.resetPassword(req.body.email, { otp: req.body.otp, resetToken: req.body.reset_token }, req.body.password);
   return success(res, [], 'Password reset successfully. Please log in.');
 });
 
