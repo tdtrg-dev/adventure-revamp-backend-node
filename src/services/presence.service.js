@@ -21,7 +21,7 @@ async function broadcastToPartners(user, isOnline) {
   });
 
   partnerIds.forEach((partnerId) => {
-    pusher.trigger(`user.${partnerId}`, isOnline ? 'user_online' : 'user_offline', {
+    pusher.trigger(pusher.userChannel(partnerId), isOnline ? 'user_online' : 'user_offline', {
       user_id: user._id.toString(),
       is_online: isOnline,
       last_seen_at: lastSeenAt,
