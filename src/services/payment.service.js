@@ -31,7 +31,9 @@ async function createPayment(data) {
     currency: data.currency || env.payment.defaultCurrency,
     status: data.status || 'completed',
     gateway: data.gateway,
-    gateway_transaction_id: data.gateway_transaction_id ?? null,
+    // Left as `undefined` (not `?? null`) when absent — an explicit null would
+    // still collide on the sparse+unique index (see the field's own comment).
+    gateway_transaction_id: data.gateway_transaction_id || undefined,
     gateway_response: data.gateway_response ?? null,
     description: data.description ?? null,
     metadata: data.metadata ?? null,

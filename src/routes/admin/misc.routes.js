@@ -13,6 +13,7 @@ const ticketBookingService = require('../../services/ticketBooking.service');
 const reviewService = require('../../services/review.service');
 const parkStayLeadService = require('../../services/parkStayLead.service');
 const postService = require('../../services/post.service');
+const payoutService = require('../../services/payout.service');
 const { objectId } = require('../../validators/common');
 const Joi = require('joi');
 
@@ -133,6 +134,62 @@ router.delete(
   asyncHandler(async (req, res) => {
     await userService.deleteReport(req.params.id);
     return success(res, [], 'Report deleted successfully');
+  })
+);
+
+// ── Wallets & Payouts ────────────────────────────────────────────────────────
+router.get(
+  '/wallets',
+  validate(v.paginated, 'query'),
+  asyncHandler(async (req, res) => {
+    const data = await payoutService.getWallets(req.query);
+    return success(res, data, 'Wallets fetched successfully.');
+  })
+);
+router.get(
+  '/payouts',
+  validate(v.paginated, 'query'),
+  asyncHandler(async (req, res) => {
+    const data = await payoutService.getPayoutsReport(req.query);
+    return success(res, data, 'Payout report fetched successfully.');
+  })
+);
+router.get(
+  '/payouts/organizer-detail',
+  validate(v.organizerIdQuery, 'query'),
+  asyncHandler(async (req, res) => {
+    try {
+      const data = await payoutService.getOrganizerDetail(req.query.organizer_id);
+      return success(res, data, 'Organizer payout detail fetched successfully.');
+    } catch (e) {
+      return error(res, e.message, e.statusCode || 404, []);
+    }
+  })
+);
+router.post(
+  '/payouts/release',
+  validate(v.payoutRelease),
+  asyncHandler(async (req, res) => {
+    const actor = req.admin || req.user;
+    try {
+      const data = await payoutService.releasePayout(actor.id, req.body.organizer_id);
+      return success(res, data, 'Payout released successfully.');
+    } catch (e) {
+      return error(res, e.message, e.statusCode || 400, []);
+    }
+  })
+);
+router.post(
+  '/payouts/retry',
+  validate(v.payoutRetry),
+  asyncHandler(async (req, res) => {
+    const actor = req.admin || req.user;
+    try {
+      const data = await payoutService.retryPayout(actor.id, req.body.payout_id);
+      return success(res, data, 'Payout retried successfully.');
+    } catch (e) {
+      return error(res, e.message, e.statusCode || 400, []);
+    }
   })
 );
 

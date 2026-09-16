@@ -66,6 +66,15 @@ const actionUserEventReport = Joi.object({
   remarks: Joi.string().allow(null, ''),
 });
 
+const paginated = Joi.object({
+  page: Joi.number().integer().min(1),
+  per_page: Joi.number().integer().min(1).max(100),
+});
+
+const organizerIdQuery = Joi.object({ organizer_id: objectId().required() });
+const payoutRelease = Joi.object({ organizer_id: objectId().required() });
+const payoutRetry = Joi.object({ payout_id: objectId().required() });
+
 module.exports = {
   login,
   companyCategory,
@@ -80,4 +89,8 @@ module.exports = {
   parkStayLeadIndex,
   parkStayLeadStatus,
   actionUserEventReport,
+  paginated,
+  organizerIdQuery,
+  payoutRelease,
+  payoutRetry,
 };

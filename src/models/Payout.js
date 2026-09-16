@@ -9,7 +9,11 @@ const payoutSchema = new Schema(
     currency: { type: String, default: 'USD' },
     status: { type: String, enum: ['pending', 'processing', 'completed', 'failed', 'reversed'], default: 'pending' },
     gateway: { type: String, enum: ['stripe', 'manual', 'bank_transfer'], default: 'stripe' },
-    gateway_payout_id: { type: String, default: null, unique: true, sparse: true },
+    // No `default: null` — a sparse+unique index only exempts a field that's
+    // truly absent. Explicitly defaulting it to null would make every payout
+    // without a gateway id yet (failed/processing) collide on that shared null,
+    // unlike MySQL's unique index where every NULL is distinct.
+    gateway_payout_id: { type: String, unique: true, sparse: true },
     gateway_response: { type: Schema.Types.Mixed, default: null },
     initiated_at: { type: Date, default: null },
     completed_at: { type: Date, default: null },

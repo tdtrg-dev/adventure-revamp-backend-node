@@ -148,4 +148,60 @@ module.exports = {
       responses: { 200: ok('Report deleted successfully.'), 401: unauthorized() },
     },
   },
+
+  // ── Wallets & Payouts ────────────────────────────────────────────────────
+  '/admin/wallets': {
+    get: {
+      tags: ['Admin'],
+      summary: 'List organizer wallets, highest pending balance first',
+      ...auth,
+      parameters: query('AdminPaginated'),
+      responses: { 200: ok('Wallets fetched successfully.'), 401: unauthorized() },
+    },
+  },
+  '/admin/payouts': {
+    get: {
+      tags: ['Admin'],
+      summary: 'Per-event payout report (gross sales, fees, organizer earnings, eligibility)',
+      description:
+        'One row per event with confirmed ticket sales. `payout_status` is holding (not yet past the 7-day hold), ' +
+        'eligible (ready for POST /admin/payouts/release), partially_transferred, or transferred.',
+      ...auth,
+      parameters: query('AdminPaginated'),
+      responses: { 200: ok('Payout report fetched successfully.'), 401: unauthorized() },
+    },
+  },
+  '/admin/payouts/organizer-detail': {
+    get: {
+      tags: ['Admin'],
+      summary: "Drill down into one organizer's earnings and payouts",
+      description: "Wallet balance plus every creator_earnings split (pending and transferred) and the organizer's full payout history.",
+      ...auth,
+      parameters: query('AdminOrganizerIdQuery'),
+      responses: { 200: ok('Organizer payout detail fetched successfully.'), 400: err('Validation failed.'), 401: unauthorized(), 404: err('Organizer not found.') },
+    },
+  },
+  '/admin/payouts/release': {
+    post: {
+      tags: ['Admin'],
+      summary: "Release an organizer's eligible earnings",
+      description:
+        'Re-validates eligibility server-side, confirms the organizer\'s Stripe Connect account has completed onboarding, ' +
+        'then creates a Payout and calls Stripe\'s Transfer API to move their currently-eligible creator_earnings balance ' +
+        'into their connected account. Moves real money — there is no automatic/scheduled release, an admin must trigger it.',
+      ...auth,
+      ...body('AdminPayoutRelease'),
+      responses: { 200: ok('Payout released successfully.'), 400: err('Nothing eligible yet, organizer not Stripe-connected, or the Transfer failed.'), 401: unauthorized() },
+    },
+  },
+  '/admin/payouts/retry': {
+    post: {
+      tags: ['Admin'],
+      summary: 'Retry a failed payout',
+      description: "Re-attempts a payout that previously failed at the Stripe Transfer step. The failed attempt made no balance changes, so this re-evaluates the organizer's currently-eligible earnings and creates a fresh Payout.",
+      ...auth,
+      ...body('AdminPayoutRetry'),
+      responses: { 200: ok('Payout retried successfully.'), 400: err('Payout not found, or not in a failed state.'), 401: unauthorized() },
+    },
+  },
 };
