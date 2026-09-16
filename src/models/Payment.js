@@ -43,7 +43,10 @@ const paymentSchema = new Schema(
     currency: { type: String, default: 'USD' },
     status: { type: String, enum: ['pending', 'completed', 'failed', 'refunded', 'partially_refunded'], default: 'pending' },
     gateway: { type: String, enum: ['stripe', 'manual', 'free', 'bank_transfer'], default: 'stripe' },
-    gateway_transaction_id: { type: String, default: null, unique: true, sparse: true },
+    // No `default: null` — see Payout.gateway_payout_id for why an explicit
+    // null default breaks the sparse+unique index (multiple gateway-less
+    // payments, e.g. manual/free-adjacent ones, would collide on shared null).
+    gateway_transaction_id: { type: String, unique: true, sparse: true },
     gateway_response: { type: Schema.Types.Mixed, default: null },
     description: { type: String, default: null },
     metadata: { type: Schema.Types.Mixed, default: null },

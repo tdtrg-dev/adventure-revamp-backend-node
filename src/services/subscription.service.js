@@ -186,7 +186,9 @@ async function checkout(data) {
     starts_at: startsAt,
     ends_at: endsAt,
     gateway,
-    gateway_subscription_id: isFree ? null : transactionId,
+    // undefined (not null) when free — an explicit null would still collide on
+    // the sparse+unique index once a second free subscriber signs up.
+    gateway_subscription_id: isFree ? undefined : transactionId,
     auto_renew: true,
   });
 

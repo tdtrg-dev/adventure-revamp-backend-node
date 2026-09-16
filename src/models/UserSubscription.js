@@ -14,7 +14,10 @@ const userSubscriptionSchema = new Schema(
     cancellation_reason: { type: String, default: null },
     auto_renew: { type: Boolean, default: true },
     gateway: { type: String, enum: ['stripe', 'manual', 'free', 'google', 'apple'], required: true },
-    gateway_subscription_id: { type: String, default: null, unique: true, sparse: true },
+    // No `default: null` — see Payout.gateway_payout_id for why an explicit
+    // null default breaks the sparse+unique index (e.g. free-gateway
+    // subscriptions, which never get a gateway id, would collide on shared null).
+    gateway_subscription_id: { type: String, unique: true, sparse: true },
     deleted_at: { type: Date, default: null },
   },
   { timestamps: { createdAt: 'created_at', updatedAt: 'updated_at' } }
