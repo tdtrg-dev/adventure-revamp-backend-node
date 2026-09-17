@@ -6,6 +6,7 @@ const Connection = require('../models/Connection');
 const Report = require('../models/Report');
 const { relativeUploadPath, fileUrl } = require('../middlewares/upload');
 const { dateOnly, datetimeStr } = require('../utils/dateFormat');
+const eventService = require('./event.service');
 const { notifyUser } = require('./notification.service');
 
 function fail(message, code = 400) {
@@ -315,6 +316,7 @@ async function actionReport(reportId, action, remarks, adminId) {
     } else if (action === 'delete') {
       event.deleted_at = new Date();
       await event.save();
+      await eventService.deleteEventGroup(event._id);
       const body = `Your event '${event.trip_name}' has been deleted by the admin due to reports.`;
       await notifyUser(event.organizer_id, 'event_deleted', { report_id: report.id }, { actorId: adminId, title: 'Event Deleted', body });
     }
