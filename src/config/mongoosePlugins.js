@@ -53,4 +53,69 @@ mongoose.plugin((schema) => {
   schema.set('toObject', { virtuals: true });
 });
 
+const SOFT_DELETE_FIELD = 'deleted_at';
+
+/**
+ * Read operations only. Writes (updateOne/updateMany/findOneAndUpdate/deleteOne)
+ * are deliberately left unscoped: the seeders upsert by natural key, and the hard
+ * deletes in utils/adminCrud.js and event.service's deleteEvent must still be able
+ * to reach a row that has already been soft-deleted.
+ *
+ * Model.exists() and populate() both run through findOne/find internally, so they
+ * inherit the scope without needing a hook of their own.
+ */
+const SOFT_DELETE_READ_OPS = ['find', 'findOne', 'countDocuments', 'distinct'];
+
+/**
+ * Laravel's SoftDeletes trait installs a global scope that appends
+ * `deleted_at IS NULL` to every query on the model. Mongoose has no equivalent, so
+ * each ported service was left to remember the filter by hand — and the group reads
+ * never did, which is why a deleted group kept coming back from every listing
+ * endpoint even though the delete itself had succeeded. The event and post reads
+ * were only half-converted, so a soft-deleted row vanished from some screens and
+ * lingered on others.
+ *
+ * This restores the global scope: any schema declaring a `deleted_at` path gets the
+ * filter injected into its reads and its aggregations. An explicit `deleted_at` in
+ * the caller's own filter still wins — which leaves every pre-existing
+ * `deleted_at: null` in the services behaving exactly as it did — and
+ * `.withTrashed()` opts a single query out.
+ */
+function softDeletePlugin(schema) {
+  if (!schema.path(SOFT_DELETE_FIELD)) return;
+
+  schema.query.withTrashed = function withTrashed() {
+    return this.setOptions({ withTrashed: true });
+  };
+
+  schema.query.onlyTrashed = function onlyTrashed() {
+    return this.setOptions({ withTrashed: true }).where({ [SOFT_DELETE_FIELD]: { $ne: null } });
+  };
+
+  schema.pre(SOFT_DELETE_READ_OPS, function excludeTrashed() {
+    if (this.getOptions().withTrashed) return;
+    if (this.getFilter()[SOFT_DELETE_FIELD] !== undefined) return;
+    this.where({ [SOFT_DELETE_FIELD]: null });
+  });
+
+  schema.pre('aggregate', function excludeTrashedFromPipeline() {
+    if (this.options && this.options.withTrashed) return;
+
+    const pipeline = this.pipeline();
+    const first = pipeline[0];
+
+    // $geoNear has to stay the first stage of a pipeline, so its filter goes inside
+    // the stage's own `query` rather than into a $match prepended ahead of it. The
+    // caller's query is spread last so an explicit deleted_at still wins.
+    if (first && first.$geoNear) {
+      first.$geoNear.query = { [SOFT_DELETE_FIELD]: null, ...(first.$geoNear.query || {}) };
+      return;
+    }
+
+    pipeline.unshift({ $match: { [SOFT_DELETE_FIELD]: null } });
+  });
+}
+
+mongoose.plugin(softDeletePlugin);
+
 module.exports = mongoose;

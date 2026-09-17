@@ -1,6 +1,7 @@
 const Group = require('../models/Group');
 const User = require('../models/User');
 const Post = require('../models/Post');
+const Conversation = require('../models/Conversation');
 const postService = require('./post.service');
 const pusher = require('../integrations/pusher');
 const { relativeUploadPath } = require('../middlewares/upload');
@@ -91,12 +92,32 @@ async function updateGroup(userId, groupId, body, files) {
   return formatted;
 }
 
+/**
+ * Soft-deletes a group together with everything that only exists because the group
+ * does — its posts and its chat thread. Without the cascade those outlive the group
+ * and stay reachable: the posts through the community feed and the saved/hidden
+ * lists, the conversation through the chat list.
+ *
+ * Exported because event.service has to run the same cascade on the auto-created
+ * event group when its event is deleted. Callers stamp `group.deleted_at` and save
+ * it themselves, then pass the group in — the timestamp is reused so the whole
+ * cascade shares one deletion time.
+ */
+async function cascadeGroupDelete(group) {
+  const filter = { group_id: group._id, deleted_at: null };
+  await Promise.all([
+    Post.updateMany(filter, { $set: { deleted_at: group.deleted_at } }),
+    Conversation.updateMany(filter, { $set: { deleted_at: group.deleted_at } }),
+  ]);
+}
+
 async function deleteGroup(userId, groupId) {
   const group = await Group.findById(groupId);
   if (!group) throw fail('Group not found');
   if (String(group.user_id) !== String(userId)) throw fail('Unauthorized to delete this group');
   group.deleted_at = new Date();
   await group.save();
+  await cascadeGroupDelete(group);
   pusher.trigger('community-group-channel', 'group.event', { action: 'group_deleted', data: { id: groupId } });
 }
 
@@ -292,6 +313,7 @@ module.exports = {
   createGroup,
   updateGroup,
   deleteGroup,
+  cascadeGroupDelete,
   getAllGroups,
   getUserGroups,
   getGroupById,

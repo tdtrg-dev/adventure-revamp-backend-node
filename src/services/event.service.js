@@ -6,6 +6,7 @@ const TicketCategory = require('../models/TicketCategory');
 const User = require('../models/User');
 const Group = require('../models/Group');
 const Conversation = require('../models/Conversation');
+const groupService = require('./group.service');
 const { notifyUser } = require('./notification.service');
 const { haversineDistanceKm, distanceFromPointToLineSegment } = require('../utils/geo');
 const { relativeUploadPath, fileUrl } = require('../middlewares/upload');
@@ -255,6 +256,22 @@ async function deleteEvent(id) {
   const event = await Event.findById(id);
   if (!event) throw notFound('Event not found.');
   await Event.deleteOne({ _id: id });
+  await deleteEventGroup(id);
+}
+
+/**
+ * The group and conversation createEventGroup() spins up for every new event have no
+ * meaning once the event is gone, but nothing referenced them from the Event document,
+ * so they used to survive the delete — leaving a live group in the community listing
+ * and a live thread in the chat list for an event that no longer exists.
+ */
+async function deleteEventGroup(eventId) {
+  const group = await Group.findOne({ event_id: eventId, group_type: 'event' });
+  if (!group) return;
+
+  group.deleted_at = new Date();
+  await group.save();
+  await groupService.cascadeGroupDelete(group);
 }
 
 async function changeStatus(eventId, status) {
@@ -1001,6 +1018,7 @@ module.exports = {
   createOrUpdateEvent,
   cancelEvent,
   deleteEvent,
+  deleteEventGroup,
   changeStatus,
   findEventById,
   trackVisit,
